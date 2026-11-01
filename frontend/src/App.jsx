@@ -537,6 +537,14 @@ export default function App() {
               <h2>GS Shop</h2>
               <span>Alangulam Automation</span>
             </div>
+            <button
+              type="button"
+              className="sidebar-close-btn"
+              onClick={() => setSidebarOpen(false)}
+              aria-label="Close menu"
+            >
+              <X size={18} />
+            </button>
           </div>
           <div className="workspace-chip">
             <span>Branch</span>
@@ -578,6 +586,15 @@ export default function App() {
           </div>
         </div>
       </aside>
+
+      {/* Mobile Drawer Overlay Backdrop */}
+      {sidebarOpen && (
+        <div
+          className="sidebar-overlay"
+          onClick={() => setSidebarOpen(false)}
+          aria-hidden="true"
+        />
+      )}
 
       {/* Main Wrapper */}
       <div className="main-wrapper">
@@ -795,6 +812,64 @@ export default function App() {
               } catch (e) { setError(e.message); }
             }} />}
         </main>
+
+        {/* Mobile Fixed Bottom Navigation Bar */}
+        <nav className="mobile-bottom-nav" aria-label="Mobile Navigation">
+          <button
+            type="button"
+            className={`mobile-nav-btn ${tab === 'dashboard' ? 'active' : ''}`}
+            onClick={() => { setTab('dashboard'); setSidebarOpen(false); }}
+          >
+            <div className="mobile-nav-icon">
+              <LayoutDashboard size={20} />
+            </div>
+            <span>Home</span>
+          </button>
+          <button
+            type="button"
+            className={`mobile-nav-btn ${tab === 'customers' ? 'active' : ''}`}
+            onClick={() => { setTab('customers'); setSidebarOpen(false); }}
+          >
+            <div className="mobile-nav-icon">
+              <Users size={20} />
+              {customers.length > 0 && <span className="mobile-badge-dot">{customers.length}</span>}
+            </div>
+            <span>Customers</span>
+          </button>
+          <button
+            type="button"
+            className={`mobile-nav-btn ${tab === 'campaigns' || tab === 'create' ? 'active' : ''}`}
+            onClick={() => { setTab('campaigns'); setSidebarOpen(false); }}
+          >
+            <div className="mobile-nav-icon">
+              <Megaphone size={20} />
+              {campaigns.length > 0 && <span className="mobile-badge-dot">{campaigns.length}</span>}
+            </div>
+            <span>Campaigns</span>
+          </button>
+          <button
+            type="button"
+            className={`mobile-nav-btn ${tab === 'autoreplies' || tab === 'conversations' ? 'active' : ''}`}
+            onClick={() => { setTab('autoreplies'); setSidebarOpen(false); }}
+          >
+            <div className="mobile-nav-icon">
+              <Bot size={20} />
+              {pendingHandoversCount > 0 && <span className="mobile-badge-dot alert">!</span>}
+            </div>
+            <span>Replies</span>
+          </button>
+          <button
+            type="button"
+            className={`mobile-nav-btn ${['templates', 'messages', 'reports', 'settings'].includes(tab) || sidebarOpen ? 'active' : ''}`}
+            onClick={() => setSidebarOpen(prev => !prev)}
+            aria-label="Open full menu"
+          >
+            <div className="mobile-nav-icon">
+              <Menu size={20} />
+            </div>
+            <span>Menu</span>
+          </button>
+        </nav>
       </div>
 
       {/* --- MODALS --- */}
@@ -2680,7 +2755,7 @@ function SettingsView({ authOwner, onChangePassword }) {
             </div>
           )}
 
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 16 }}>
+          <div className="settings-form-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 16 }}>
             <div style={fieldStyle}>
               <label style={labelStyle}>Shop Name *</label>
               <input style={inputStyle} value={settings.shopName} onChange={e => handleChange('shopName', e.target.value)}
@@ -2792,7 +2867,7 @@ function SettingsView({ authOwner, onChangePassword }) {
                 <AlertCircle size={16} /> {pwError}
               </div>
             )}
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 14 }}>
+            <div className="settings-form-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 14 }}>
               {[
                 { key: 'currentPassword', label: 'Current Password', placeholder: 'Enter current password' },
                 { key: 'newPassword', label: 'New Password (min 8 chars)', placeholder: 'Enter new password' },
