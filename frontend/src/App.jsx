@@ -15,17 +15,21 @@ import {
   Clock3,
   Copy,
   CreditCard,
+  Download,
   Edit2,
   Eye,
   FileSpreadsheet,
   FileText,
+  Filter,
   Gift,
+  Globe,
   Headphones,
   HelpCircle,
   History,
   IndianRupee,
   Info,
   KeyRound,
+  Layers,
   LayoutDashboard,
   LogIn,
   LogOut,
@@ -35,6 +39,7 @@ import {
   MessageSquare,
   MessageSquarePlus,
   MessagesSquare,
+  Percent,
   Play,
   PlusCircle,
   RefreshCw,
@@ -44,6 +49,7 @@ import {
   Settings,
   ShieldAlert,
   ShieldCheck,
+  Smartphone,
   Sparkles,
   Store,
   Tag,
@@ -244,11 +250,11 @@ export default function App() {
     setLoading(true);
     setError('');
     try {
-      const [c, t, ca, m, ar, conv, an] = await Promise.all([
+      const [c, t, ca, mResp, ar, conv, an] = await Promise.all([
         request('/api/customers'),
         request('/api/templates'),
         request('/api/campaigns'),
-        request('/api/messages'),
+        request('/api/messages').catch(() => ({ messages: [] })),
         request('/api/autoreplies').catch(() => []),
         request('/api/conversations').catch(() => []),
         request('/api/analytics').catch(() => null)
@@ -256,7 +262,7 @@ export default function App() {
       setCustomers(c);
       setTemplates(t);
       setCampaigns(ca);
-      setMessages(m);
+      setMessages(Array.isArray(mResp) ? mResp : (mResp?.messages ?? []));
       setAutoReplies(ar);
       setConversations(conv);
       if (an) setAnalytics(an);
@@ -482,7 +488,9 @@ export default function App() {
     { id: 'conversations', label: 'Conversations', icon: MessagesSquare, badge: pendingHandoversCount > 0 ? `${pendingHandoversCount}!` : conversations.length },
     { id: 'templates', label: 'Message Templates', icon: FileText },
     { id: 'messages', label: 'Broadcast Logs', icon: History },
-    { id: 'reports', label: 'Reports', icon: BarChart3 },
+    { id: 'reports', label: 'Reports & Analytics', icon: BarChart3 },
+    { id: 'integration', label: 'WhatsApp API', icon: Smartphone },
+    { id: 'subscription', label: 'SaaS Plan', icon: CreditCard },
     { id: 'settings', label: 'Settings', icon: Settings }
   ];
 
@@ -504,22 +512,6 @@ export default function App() {
     return <SetupView form={setupForm} setForm={setSetupForm} onSubmit={handleSetup} loading={authLoading} error={authError} />;
   }
 
-  if (authMode === 'login') {
-    return <LoginView form={loginForm} setForm={setLoginForm} onSubmit={handleLogin} loading={authLoading} error={authError} />;
-  }
-
-  // ── Auth Gates (early returns) ──────────────────────────────
-  if (authMode === 'checking') {
-    return (
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', background: '#f8fafc', flexDirection: 'column', gap: 12 }}>
-        <div style={{ width: 48, height: 48, border: '3px solid #25D366', borderTopColor: 'transparent', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
-        <p style={{ color: '#64748b', fontSize: 14, margin: 0 }}>Loading GS Shop Dashboard…</p>
-      </div>
-    );
-  }
-  if (authMode === 'setup') {
-    return <SetupView form={setupForm} setForm={setSetupForm} onSubmit={handleSetup} loading={authLoading} error={authError} />;
-  }
   if (authMode === 'login') {
     return <LoginView form={loginForm} setForm={setLoginForm} onSubmit={handleLogin} loading={authLoading} error={authError} />;
   }
@@ -811,6 +803,10 @@ export default function App() {
                 setNotice('Password changed successfully.');
               } catch (e) { setError(e.message); }
             }} />}
+
+          {tab === 'integration' && <WhatsAppIntegrationView />}
+
+          {tab === 'subscription' && <SubscriptionView />}
         </main>
 
         {/* Mobile Fixed Bottom Navigation Bar */}
@@ -2930,6 +2926,315 @@ function SettingsView({ authOwner, onChangePassword }) {
   );
 }
 
+
+// ==========================================
+// 10. WHATSAPP INTEGRATION VIEW
+// ==========================================
+function WhatsAppIntegrationView() {
+  const [settings, setSettings] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState(null);
+
+  useEffect(() => {
+    const token = localStorage.getItem('gs_token');
+    fetch('/api/whatsapp/settings', { headers: { Authorization: `Bearer ${token}` } })
+      .then((r) => r.json())
+      .then((d) => setSettings(d))
+      .catch(() => setSettings(null))
+      .finally(() => setLoading(false));
+  }, []);
+
+  async function handleTestConnection() {
+    setTesting(true);
+    setTestResult(null);
+    try {
+      const token = localStorage.getItem('gs_token');
+      const r = await fetch('/api/whatsapp/test-connection', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: '{}'
+      });
+      const d = await r.json();
+      setTestResult({ ok: r.ok, ...d });
+    } catch (e) {
+      setTestResult({ ok: false, error: e.message });
+    } finally {
+      setTesting(false);
+    }
+  }
+
+  if (loading) {
+    return (
+      <div style={{ display: 'flex', justifyContent: 'center', padding: '60px' }}>
+        <div className="spinner" />
+      </div>
+    );
+  }
+
+  const statusOk = settings?.connection?.status === 'connected';
+
+  return (
+    <div>
+      <div className="section-header">
+        <div>
+          <h3>WhatsApp API Integration</h3>
+          <p>Live connection status, webhook health, and template metrics for your Meta WhatsApp Cloud API</p>
+        </div>
+      </div>
+
+      {/* Connection Status Card */}
+      <div className="card" style={{ marginBottom: 20 }}>
+        <div className="card-header" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <Smartphone size={20} color="#25d366" />
+            <h4 style={{ margin: 0 }}>WhatsApp Connection</h4>
+          </div>
+          <span className={`badge ${statusOk ? 'badge-delivered' : 'badge-simulated'}`}>
+            {statusOk ? '● CONNECTED' : '● DEMO MODE'}
+          </span>
+        </div>
+        <div className="card-body">
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+            {[
+              { label: 'Business Name', value: settings?.connection?.businessName || settings?.connection?.businessPhoneNumber || '—' },
+              { label: 'WABA Status', value: settings?.connection?.wabaStatus || '—' },
+              { label: 'Phone Number ID', value: settings?.connection?.phoneNumberIdMasked || settings?.connection?.phoneNumberId || '—', code: true },
+              { label: 'API Version', value: settings?.connection?.apiVersion || 'v23.0', code: true },
+            ].map((row) => (
+              <div key={row.label} style={{ padding: '8px 0' }}>
+                <div style={{ fontSize: 12, color: '#64748b', marginBottom: 4 }}>{row.label}</div>
+                {row.code
+                  ? <code style={{ fontSize: 13, background: '#f8fafc', padding: '2px 8px', borderRadius: 4 }}>{row.value}</code>
+                  : <div style={{ fontWeight: 600 }}>{row.value}</div>}
+              </div>
+            ))}
+          </div>
+
+          <div style={{ marginTop: 20, paddingTop: 16, borderTop: '1px solid #f1f5f9', display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+            <button
+              className="btn-primary"
+              onClick={handleTestConnection}
+              disabled={testing}
+            >
+              {testing ? 'Testing…' : '🔌 Test Connection'}
+            </button>
+            {testResult && (
+              <div style={{ fontSize: 13, color: testResult.ok ? '#059669' : '#dc2626', fontWeight: 500 }}>
+                {testResult.ok
+                  ? `✓ ${testResult.status || 'Connection OK'}`
+                  : `✗ ${testResult.error || testResult.message || 'Connection failed'}`}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Webhook Health Card */}
+      <div className="card" style={{ marginBottom: 20 }}>
+        <div className="card-header">
+          <h4 style={{ margin: 0 }}>🔒 Webhook Security</h4>
+        </div>
+        <div className="card-body">
+          {[
+            { label: 'Webhook Endpoint', value: settings?.webhook?.endpoint || 'POST /api/webhooks/whatsapp', code: true },
+            { label: 'Verification Token', value: settings?.webhook?.verificationConfigured ? '✓ Configured' : '✗ Not set', ok: settings?.webhook?.verificationConfigured },
+            { label: 'Signature Validation', value: settings?.webhook?.signatureValidation || 'HMAC-SHA256', code: true },
+            { label: 'Duplicate Prevention', value: 'X-Hub-Signature-256 + WebhookLog', code: true },
+          ].map((row, i, arr) => (
+            <div key={row.label} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 0', borderBottom: i < arr.length - 1 ? '1px solid #f1f5f9' : 'none' }}>
+              <span style={{ color: '#64748b', fontSize: 13 }}>{row.label}</span>
+              {row.code
+                ? <code style={{ fontSize: 11, background: '#f8fafc', padding: '2px 8px', borderRadius: 4 }}>{row.value}</code>
+                : <span style={{ fontWeight: 600, color: row.ok === false ? '#dc2626' : row.ok === true ? '#059669' : '#0f172a' }}>{row.value}</span>}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Template Metrics Card */}
+      <div className="card">
+        <div className="card-header">
+          <h4 style={{ margin: 0 }}>📋 Template Overview</h4>
+        </div>
+        <div className="card-body">
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 16 }}>
+            {[
+              { label: 'Total Templates', value: settings?.templates?.total ?? '—', color: '#6366f1' },
+              { label: 'Approved', value: settings?.templates?.approved ?? '—', color: '#059669' },
+              { label: 'Pending Review', value: settings?.templates?.pending ?? '—', color: '#f59e0b' },
+            ].map((m) => (
+              <div key={m.label} className="quota-card" style={{ borderLeftColor: m.color }}>
+                <div style={{ fontSize: 28, fontWeight: 700, color: m.color }}>{m.value}</div>
+                <div style={{ fontSize: 12, color: '#64748b', marginTop: 4 }}>{m.label}</div>
+              </div>
+            ))}
+          </div>
+          <div style={{ marginTop: 16, padding: '12px', background: '#f0fdf4', borderRadius: 8, fontSize: 13, color: '#065f46' }}>
+            <strong>🔒 DRY_RUN=true is enforced.</strong> No real WhatsApp messages will be sent regardless of API configuration.
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ==========================================
+// 11. SUBSCRIPTION / SAAS PLAN VIEW
+// ==========================================
+function SubscriptionView() {
+  const [sub, setSub] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [upgrading, setUpgrading] = useState(false);
+  const [notice, setNotice] = useState('');
+
+  useEffect(() => {
+    const token = localStorage.getItem('gs_token');
+    fetch('/api/subscription', { headers: { Authorization: `Bearer ${token}` } })
+      .then((r) => r.json())
+      .then((d) => {
+        // API returns { ok, tenant } — normalise to a flat shape
+        const t = d.tenant || d;
+        setSub({
+          plan: t.plan || 'free',
+          usage: {
+            messages: t.monthlyMessagesUsed || 0,
+            customers: t.customerCount || 0,
+            campaigns: t.campaignCount || 0
+          },
+          limits: {
+            monthlyMessages: t.monthlyMessageLimit || 500,
+            customers: t.customerLimit || 100,
+            campaigns: t.campaignLimit || 5
+          },
+          features: t.features || {},
+          subscriptionStatus: t.subscriptionStatus || 'active',
+          renewalDate: t.renewalDate
+        });
+      })
+      .catch(() => setSub(null))
+      .finally(() => setLoading(false));
+  }, []);
+
+  async function handleUpgrade(plan) {
+    setUpgrading(true);
+    setNotice('');
+    try {
+      const token = localStorage.getItem('gs_token');
+      const r = await fetch('/api/subscription/plan', {
+        method: 'PUT',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ plan })
+      });
+      const d = await r.json();
+      if (r.ok) {
+        setSub((prev) => ({ ...prev, plan: d.plan, limits: d.limits }));
+        setNotice(`Plan upgraded to ${d.plan}!`);
+      } else {
+        setNotice(d.error || 'Upgrade failed');
+      }
+    } catch (e) {
+      setNotice(e.message);
+    } finally {
+      setUpgrading(false);
+    }
+  }
+
+  if (loading) {
+    return (
+      <div style={{ display: 'flex', justifyContent: 'center', padding: '60px' }}>
+        <div className="spinner" />
+      </div>
+    );
+  }
+
+  const plans = [
+    { id: 'free', name: 'Free', price: '₹0/mo', color: '#6366f1', messages: 500, customers: 100, campaigns: 5, features: ['500 messages/month', '100 customers', '5 campaigns', 'Basic templates', 'Email support'] },
+    { id: 'starter', name: 'Starter', price: '₹999/mo', color: '#0ea5e9', messages: 5000, customers: 1000, campaigns: 20, features: ['5,000 messages/month', '1,000 customers', '20 campaigns', 'All templates', 'Priority support', 'CSV export'] },
+    { id: 'pro', name: 'Pro', price: '₹2,999/mo', color: '#25d366', messages: 25000, customers: 5000, campaigns: 100, features: ['25,000 messages/month', '5,000 customers', '100 campaigns', 'Auto-replies', 'Analytics', 'API access', 'Dedicated support'] },
+    { id: 'enterprise', name: 'Enterprise', price: 'Custom', color: '#f59e0b', messages: Infinity, customers: Infinity, campaigns: Infinity, features: ['Unlimited messages', 'Unlimited customers', 'Multi-location', 'Custom templates', 'SLA guarantee', 'Custom integrations'] },
+  ];
+
+  const currentPlan = sub?.plan || 'free';
+  const usage = sub?.usage || {};
+  const limits = sub?.limits || {};
+
+  function pct(used, limit) {
+    if (!limit || limit === Infinity) return 0;
+    return Math.min(100, Math.round((used / limit) * 100));
+  }
+
+  return (
+    <div>
+      <div className="section-header">
+        <div>
+          <h3>SaaS Subscription Plan</h3>
+          <p>Manage your plan, usage limits, and upgrade your subscription</p>
+        </div>
+      </div>
+
+      {notice && (
+        <div style={{ marginBottom: 16, padding: '12px 16px', background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 8, color: '#065f46', fontSize: 14 }}>
+          {notice}
+        </div>
+      )}
+
+      {/* Usage Quota Cards */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 16, marginBottom: 24 }}>
+        {[
+          { label: 'Messages This Month', used: usage.messages || 0, limit: limits.monthlyMessages || 25000, color: '#25d366' },
+          { label: 'Customers', used: usage.customers || 0, limit: limits.customers || 5000, color: '#6366f1' },
+          { label: 'Active Campaigns', used: usage.campaigns || 0, limit: limits.campaigns || 100, color: '#0ea5e9' },
+        ].map((q) => (
+          <div key={q.label} className="quota-card" style={{ borderLeftColor: q.color }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
+              <span style={{ fontSize: 13, color: '#64748b' }}>{q.label}</span>
+              <span style={{ fontSize: 13, fontWeight: 600 }}>
+                {q.used.toLocaleString()} / {q.limit === Infinity ? '∞' : q.limit.toLocaleString()}
+              </span>
+            </div>
+            <div className="progress-bar-wrap">
+              <div className="progress-bar-fill" style={{ width: `${pct(q.used, q.limit)}%`, background: q.color }} />
+            </div>
+            <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>{pct(q.used, q.limit)}% used</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Pricing Grid */}
+      <div className="pricing-grid">
+        {plans.map((plan) => {
+          const isActive = currentPlan === plan.id;
+          return (
+            <div key={plan.id} className={`plan-card${isActive ? ' plan-card-active' : ''}`} style={{ borderTopColor: plan.color }}>
+              {isActive && <div className="plan-badge-current">Current Plan</div>}
+              <div style={{ fontSize: 18, fontWeight: 700, color: plan.color, marginBottom: 4 }}>{plan.name}</div>
+              <div style={{ fontSize: 24, fontWeight: 800, marginBottom: 16 }}>{plan.price}</div>
+              <ul style={{ listStyle: 'none', padding: 0, margin: '0 0 20px', fontSize: 13, lineHeight: '1.8' }}>
+                {plan.features.map((f) => (
+                  <li key={f} style={{ color: '#475569' }}>✓ {f}</li>
+                ))}
+              </ul>
+              <button
+                className={isActive ? 'btn-secondary' : 'btn-primary'}
+                style={{ width: '100%', opacity: isActive ? 0.7 : 1, cursor: isActive ? 'default' : 'pointer' }}
+                disabled={isActive || upgrading}
+                onClick={() => !isActive && handleUpgrade(plan.id)}
+              >
+                {isActive ? 'Active Plan' : upgrading ? 'Upgrading…' : `Upgrade to ${plan.name}`}
+              </button>
+            </div>
+          );
+        })}
+      </div>
+
+      <div style={{ marginTop: 20, padding: '12px 16px', background: '#fef3c7', border: '1px solid #fcd34d', borderRadius: 8, fontSize: 13, color: '#92400e' }}>
+        <strong>Note:</strong> This is a demo subscription system. Payment gateway integration (Razorpay / Stripe) can be added for production billing.
+      </div>
+    </div>
+  );
+}
+
 // ==========================================
 // MODAL SUB-COMPONENTS (CustomerForm, CustomerDetails, CSVImport, CampaignDetails)
 // ==========================================
@@ -2941,6 +3246,8 @@ function CustomerFormModal({ mode, initialData, onClose, onSave }) {
   const [notes, setNotes] = useState(initialData?.notes || '');
   const [consentStatus, setConsentStatus] = useState(initialData?.consentStatus || 'unknown');
   const [consentSource, setConsentSource] = useState(initialData?.consentSource || '');
+  const [birthday, setBirthday] = useState(initialData?.birthday ? initialData.birthday.slice(0, 10) : '');
+  const [source, setSource] = useState(initialData?.source || 'store_counter');
 
   function handleSubmit(e) {
     e.preventDefault();
@@ -2953,7 +3260,9 @@ function CustomerFormModal({ mode, initialData, onClose, onSave }) {
         tags: tagList,
         notes,
         consentStatus,
-        consentSource
+        consentSource,
+        birthday: birthday || undefined,
+        source
       },
       mode,
       initialData?._id
@@ -3047,6 +3356,28 @@ function CustomerFormModal({ mode, initialData, onClose, onSave }) {
                 onChange={(e) => setNotes(e.target.value)}
                 placeholder="Purchased mixer grinder last Pongal, requested utensil catalog..."
               />
+            </div>
+
+            <div className="form-group">
+              <label>Birthday (Optional)</label>
+              <input
+                type="date"
+                className="form-input"
+                value={birthday}
+                onChange={(e) => setBirthday(e.target.value)}
+              />
+              <span className="form-hint">Used for birthday greeting automations.</span>
+            </div>
+
+            <div className="form-group">
+              <label>Customer Source</label>
+              <select className="form-select" value={source} onChange={(e) => setSource(e.target.value)}>
+                <option value="store_counter">Store Counter</option>
+                <option value="whatsapp_inquiry">WhatsApp Inquiry</option>
+                <option value="referral">Referral</option>
+                <option value="csv_import">CSV Import</option>
+                <option value="website">Website</option>
+              </select>
             </div>
           </div>
 

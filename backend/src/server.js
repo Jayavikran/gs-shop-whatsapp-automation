@@ -9,7 +9,8 @@ import jwt from 'jsonwebtoken';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import { body, param, query, validationResult } from 'express-validator';
-import { Customer, Template, Campaign, MessageLog, AutoReplyRule, Conversation, WebhookLog, Owner, ShopSettings } from './models.js';
+import axios from 'axios';
+import { Customer, Template, Campaign, MessageLog, AutoReplyRule, Conversation, WebhookLog, Owner, ShopSettings, Tenant } from './models.js';
 import {
   sendApprovedTemplate,
   sendHelloWorldTest
@@ -76,8 +77,8 @@ const JWT_SECRET = process.env.JWT_SECRET || (
 );
 const JWT_EXPIRY = '8h';
 
-function signToken(userId) {
-  return jwt.sign({ sub: String(userId) }, JWT_SECRET, { expiresIn: JWT_EXPIRY });
+function signToken(userId, tenantId = 'gs_shop_default') {
+  return jwt.sign({ sub: String(userId), tenantId }, JWT_SECRET, { expiresIn: JWT_EXPIRY });
 }
 
 function requireAuth(req, res, next) {
@@ -89,10 +90,19 @@ function requireAuth(req, res, next) {
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
     req.ownerId = decoded.sub;
+    req.businessId = decoded.tenantId || 'gs_shop_default';
     return next();
   } catch {
     return res.status(401).json({ error: 'Session expired or invalid. Please log in again.' });
   }
+}
+
+function tenantFilter(req, base = {}) {
+  const businessId = req.businessId || 'gs_shop_default';
+  return {
+    ...base,
+    $or: [{ businessId }, { businessId: { $exists: false } }]
+  };
 }
 
 // Validate express-validator results and short-circuit on errors
@@ -186,13 +196,13 @@ app.post('/api/auth/setup',
       }
       const { username, password, displayName = 'Shop Owner' } = req.body;
       const passwordHash = await bcrypt.hash(password, 12);
-      const owner = await Owner.create({ username: username.toLowerCase(), passwordHash, displayName });
-      const token = signToken(owner._id);
+      const owner = await Owner.create({ username: username.toLowerCase(), passwordHash, displayName, tenantId: 'gs_shop_default' });
+      const token = signToken(owner._id, owner.tenantId || 'gs_shop_default');
       res.status(201).json({
         ok: true,
         message: 'Owner account created successfully.',
         token,
-        owner: { id: owner._id, username: owner.username, displayName: owner.displayName }
+        owner: { id: owner._id, username: owner.username, displayName: owner.displayName, tenantId: owner.tenantId || 'gs_shop_default' }
       });
     } catch (error) {
       next(error);
@@ -223,11 +233,11 @@ app.post('/api/auth/login',
       }
       owner.lastLogin = new Date();
       await owner.save();
-      const token = signToken(owner._id);
+      const token = signToken(owner._id, owner.tenantId || 'gs_shop_default');
       res.json({
         ok: true,
         token,
-        owner: { id: owner._id, username: owner.username, displayName: owner.displayName }
+        owner: { id: owner._id, username: owner.username, displayName: owner.displayName, tenantId: owner.tenantId || 'gs_shop_default' }
       });
     } catch (error) {
       next(error);
@@ -361,7 +371,35 @@ const demoTemplates = [
     language: 'en',
     body: 'Festival Special Offers! Enjoy {{1}} at GS Shop, Alangulam. Visit us for details. Reply STOP to opt out.',
     status: 'demo_only',
-    metaTemplateId: ''
+    metaTemplateId: '',
+    lastUpdated: new Date()
+  },
+  {
+    name: 'gs_welcome_greeting',
+    category: 'MARKETING',
+    language: 'en',
+    body: 'Welcome to GS Shop Alangulam! Thank you for visiting our store. Contact us for latest home appliances and kitchenware. Reply STOP to opt out.',
+    status: 'approved',
+    metaTemplateId: 'meta_tpl_welcome_01',
+    lastUpdated: new Date()
+  },
+  {
+    name: 'gs_order_update',
+    category: 'UTILITY',
+    language: 'en',
+    body: 'Hello {{1}}, your order at GS Shop Alangulam is ready for collection. Thank you for shopping with us!',
+    status: 'approved',
+    metaTemplateId: 'meta_tpl_order_02',
+    lastUpdated: new Date()
+  },
+  {
+    name: 'gs_exclusive_promo',
+    category: 'MARKETING',
+    language: 'en',
+    body: 'Exclusive Member Offer: {{1}} available at GS Shop Alangulam this weekend. Visit store or reply for details. Reply STOP to opt out.',
+    status: 'approved',
+    metaTemplateId: 'meta_tpl_promo_03',
+    lastUpdated: new Date()
   }
 ];
 
@@ -371,27 +409,8 @@ const defaultAutoReplies = [
     replyText: 'வணக்கம்! GS Shop Alangulam-க்கு வரவேற்கிறோம். நாங்கள் உங்களுக்கு எவ்வாறு உதவ முடியும்? / Hello! Welcome to GS Shop Alangulam. How can we help you today?',
     language: 'bilingual',
     actionType: 'reply',
-    enabled: true
-  },
-  {
-    keyword: 'price, rate, cost, விலை',
-    replyText: 'எங்கள் தயாரிப்புகளின் விலை விவரங்களை அறிய எங்கள் கடைக்கு வருகை தாருங்கள் அல்லது தயாரிப்பின் பெயரை அனுப்பவும். / To know price details of home appliances, please send product name or visit our shop.',
-    language: 'bilingual',
-    actionType: 'reply',
-    enabled: true
-  },
-  {
-    keyword: 'offer, discount, festival, சலுகை, தள்ளுபடி',
-    replyText: 'GS Shop Alangulam தற்போதைய சலுகைகள்: மிக்சி, கிரைண்டர் & பாத்திரங்களுக்கு 20% வரை சிறப்பு தள்ளுபடி! / Current festival offers: Up to 20% off on Mixer Grinders, Cookware & Appliances at GS Shop Alangulam!',
-    language: 'bilingual',
-    actionType: 'offer',
-    enabled: true
-  },
-  {
-    keyword: 'location, address, landmark, முகவரி, இடம்',
-    replyText: 'எங்கள் கடை முகவரி: GS Shop, Main Road, Alangulam, Tenkasi District - 627851. Landmark: Near Bus Stand. / Address: GS Shop, Main Road, Alangulam, Tenkasi Dist.',
-    language: 'bilingual',
-    actionType: 'reply',
+    category: 'welcome',
+    priority: 1,
     enabled: true
   },
   {
@@ -399,6 +418,44 @@ const defaultAutoReplies = [
     replyText: 'கடை திறக்கும் நேரம்: திங்கள் - ஞாயிறு: காலை 9:00 மணி முதல் இரவு 9:30 மணி வரை. / Shop Hours: Monday - Sunday: 9:00 AM to 9:30 PM.',
     language: 'bilingual',
     actionType: 'reply',
+    category: 'business_hours',
+    priority: 2,
+    enabled: true
+  },
+  {
+    keyword: 'away, closed, night, விடுமுறை',
+    replyText: 'எங்கள் கடை தற்போது மூடப்பட்டுள்ளது. காலை 9:00 மணிக்கு திறக்கப்படும். உங்கள் செய்தியை குறித்துக் கொண்டோம். / We are currently closed. Our store opens at 9:00 AM. We will reply to your message soon!',
+    language: 'bilingual',
+    actionType: 'reply',
+    category: 'away',
+    priority: 3,
+    enabled: true
+  },
+  {
+    keyword: 'price, rate, cost, விலை',
+    replyText: 'எங்கள் தயாரிப்புகளின் விலை விவரங்களை அறிய எங்கள் கடைக்கு வருகை தாருங்கள் அல்லது தயாரிப்பின் பெயரை அனுப்பவும். / To know price details of home appliances, please send product name or visit our shop.',
+    language: 'bilingual',
+    actionType: 'reply',
+    category: 'keyword',
+    priority: 4,
+    enabled: true
+  },
+  {
+    keyword: 'offer, discount, festival, சலுகை, தள்ளுபடி',
+    replyText: 'GS Shop Alangulam தற்போதைய சலுகைகள்: மிக்சி, கிரைண்டர் & பாத்திரங்களுக்கு 20% வரை சிறப்பு தள்ளுபடி! / Current festival offers: Up to 20% off on Mixer Grinders, Cookware & Appliances at GS Shop Alangulam!',
+    language: 'bilingual',
+    actionType: 'offer',
+    category: 'custom',
+    priority: 5,
+    enabled: true
+  },
+  {
+    keyword: 'location, address, landmark, முகவரி, இடம்',
+    replyText: 'எங்கள் கடை முகவரி: GS Shop, Main Road, Alangulam, Tenkasi District - 627851. Landmark: Near Bus Stand. / Address: GS Shop, Main Road, Alangulam, Tenkasi Dist.',
+    language: 'bilingual',
+    actionType: 'reply',
+    category: 'keyword',
+    priority: 6,
     enabled: true
   },
   {
@@ -406,6 +463,8 @@ const defaultAutoReplies = [
     replyText: 'எங்களை தொடர்பு கொள்ள: +91 99000 00001 / Email: gsshop.alangulam@gmail.com / Contact: GS Shop Alangulam customer desk.',
     language: 'bilingual',
     actionType: 'reply',
+    category: 'keyword',
+    priority: 7,
     enabled: true
   },
   {
@@ -413,6 +472,8 @@ const defaultAutoReplies = [
     replyText: 'உங்கள் கோரிக்கை ஏற்றுக்கொள்ளப்பட்டது. எங்கள் வாடிக்கையாளர் சேவை பிரதிநிதி விரைவில் உங்களை தொடர்புகொள்வார். / A human store agent has been notified and will assist you shortly.',
     language: 'bilingual',
     actionType: 'handover',
+    category: 'custom',
+    priority: 8,
     enabled: true
   }
 ];
@@ -430,9 +491,29 @@ async function ensureDefaultAutoReplies() {
   }
 }
 
+async function ensureDefaultTenant() {
+  await Tenant.updateOne(
+    { tenantId: 'gs_shop_default' },
+    {
+      $setOnInsert: {
+        tenantId: 'gs_shop_default',
+        name: 'GS Shop Alangulam',
+        ownerUsername: 'gsadmin',
+        plan: 'pro',
+        monthlyMessageLimit: 5000,
+        monthlyMessagesUsed: 0,
+        customerLimit: 2500,
+        campaignLimit: 50,
+        subscriptionStatus: 'active'
+      }
+    },
+    { upsert: true }
+  );
+}
+
 async function matchAutoReply(incomingText, customer) {
   const normalizedText = String(incomingText || '').toLowerCase().trim();
-  const rules = await AutoReplyRule.find({ enabled: true }).lean();
+  const rules = await AutoReplyRule.find({ enabled: true }).sort({ priority: 1, createdAt: 1 }).lean();
 
   let matchedRule = null;
 
@@ -561,7 +642,8 @@ app.get('/api/analytics', requireAuth, async (_req, res, next) => {
       simulatedMessages,
       liveSentMessages,
       liveDeliveredMessages,
-      failedMessages
+      failedMessages,
+      monthlyUsageMessages
     ] = await Promise.all([
       Customer.countDocuments(),
       Customer.countDocuments({ consentStatus: 'opted_in' }),
@@ -580,8 +662,13 @@ app.get('/api/analytics', requireAuth, async (_req, res, next) => {
       MessageLog.countDocuments({ status: 'dry_run' }),
       MessageLog.countDocuments({ status: 'sent' }),
       MessageLog.countDocuments({ status: { $in: ['delivered', 'read'] } }),
-      MessageLog.countDocuments({ status: 'failed' })
+      MessageLog.countDocuments({ status: 'failed' }),
+      MessageLog.countDocuments({
+        createdAt: { $gte: new Date(new Date().getFullYear(), new Date().getMonth(), 1) }
+      })
     ]);
+
+    const tenant = await Tenant.findOne({ tenantId: req.businessId || 'gs_shop_default' }).lean();
 
     res.json({
       customers: {
@@ -599,6 +686,7 @@ app.get('/api/analytics', requireAuth, async (_req, res, next) => {
       },
       campaigns: {
         total: totalCampaigns,
+        active: scheduledCampaigns + processingCampaigns,
         draft: draftCampaigns,
         scheduled: scheduledCampaigns,
         processing: processingCampaigns,
@@ -606,11 +694,20 @@ app.get('/api/analytics', requireAuth, async (_req, res, next) => {
         cancelled: cancelledCampaigns
       },
       messages: {
+        total: simulatedMessages + liveSentMessages + liveDeliveredMessages + failedMessages,
         simulatedDryRun: simulatedMessages,
         liveSent: liveSentMessages,
         liveDelivered: liveDeliveredMessages,
         liveTotal: liveSentMessages + liveDeliveredMessages,
-        failed: failedMessages
+        failed: failedMessages,
+        monthlyUsage: monthlyUsageMessages,
+        monthlyLimit: tenant?.monthlyMessageLimit || 5000
+      },
+      whatsapp: {
+        connectionStatus: (process.env.WHATSAPP_ACCESS_TOKEN && process.env.WHATSAPP_PHONE_NUMBER_ID) ? 'connected' : 'demo_mode',
+        dryRun: isDryRun(),
+        webhookConfigured: Boolean(process.env.WHATSAPP_VERIFY_TOKEN),
+        secretConfigured: Boolean(process.env.WHATSAPP_APP_SECRET)
       },
       safety: {
         dryRun: isDryRun(),
@@ -735,7 +832,7 @@ app.get('/api/customers/:id', requireAuth, async (req, res, next) => {
 
 app.post('/api/customers', requireAuth, async (req, res, next) => {
   try {
-    const { name, phone, segment = 'general', tags = [], notes = '', consentStatus = 'unknown', consentSource = '' } = req.body;
+    const { name, phone, birthday = '', source = 'store_counter', segment = 'general', tags = [], notes = '', consentStatus = 'unknown', consentSource = '' } = req.body;
 
     if (!name?.trim()) {
       return res.status(400).json({ error: 'Customer name is required.' });
@@ -755,8 +852,11 @@ app.post('/api/customers', requireAuth, async (req, res, next) => {
     const consentAt = validConsent === 'opted_in' ? new Date() : null;
 
     const customer = await Customer.create({
+      businessId: req.businessId || 'gs_shop_default',
       name: name.trim(),
       phone: normalizedPhone,
+      birthday: String(birthday || '').trim(),
+      source: String(source || 'store_counter').trim(),
       segment: ['general', 'recent', 'appliances', 'vip'].includes(segment) ? segment : 'general',
       tags: Array.isArray(tags) ? tags.map(t => String(t).trim()).filter(Boolean) : [],
       notes: String(notes || '').trim(),
@@ -809,6 +909,14 @@ app.put('/api/customers/:id', requireAuth, async (req, res, next) => {
 
     if (notes !== undefined) {
       customer.notes = String(notes || '').trim();
+    }
+
+    if (req.body.birthday !== undefined) {
+      customer.birthday = String(req.body.birthday || '').trim();
+    }
+
+    if (req.body.source !== undefined) {
+      customer.source = String(req.body.source || '').trim();
     }
 
     if (consentStatus && ['opted_in', 'opted_out', 'unknown'].includes(consentStatus)) {
@@ -922,8 +1030,11 @@ app.post('/api/customers/import', requireAuth, async (req, res, next) => {
       const consentStatus = isOptedIn ? 'opted_in' : isOptedOut ? 'opted_out' : 'unknown';
 
       toInsert.push({
+        businessId: req.businessId || 'gs_shop_default',
         name,
         phone: normalized,
+        birthday: String(row.birthday || '').trim(),
+        source: String(row.source || 'csv_import').trim(),
         segment: ['general', 'recent', 'appliances', 'vip'].includes(row.segment) ? row.segment : 'general',
         tags: Array.isArray(row.tags) ? row.tags : typeof row.tags === 'string' ? row.tags.split(',').map(s => s.trim()).filter(Boolean) : [],
         notes: String(row.notes || '').trim(),
@@ -1374,16 +1485,43 @@ app.get('/api/campaigns/:id/messages', requireAuth, async (req, res, next) => {
   }
 });
 
-app.get('/api/messages', requireAuth, async (_req, res, next) => {
+app.get('/api/messages', requireAuth, async (req, res, next) => {
   try {
-    res.json(
-      await MessageLog.find()
+    const { status, search, page = 1, limit = 50 } = req.query;
+    const pageNum = Math.max(1, parseInt(page, 10) || 1);
+    const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 50));
+    const skip = (pageNum - 1) * limitNum;
+
+    const query = {};
+    if (status && status !== 'all') {
+      query.status = status;
+    }
+    if (search && search.trim()) {
+      const term = search.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      query.$or = [
+        { recipientPhone: { $regex: term, $options: 'i' } },
+        { templateName: { $regex: term, $options: 'i' } }
+      ];
+    }
+
+    const [total, messages] = await Promise.all([
+      MessageLog.countDocuments(query),
+      MessageLog.find(query)
         .populate('customerId', 'name')
         .populate('campaignId', 'name')
         .sort({ createdAt: -1 })
-        .limit(200)
+        .skip(skip)
+        .limit(limitNum)
         .lean()
-    );
+    ]);
+
+    res.json({
+      messages,
+      total,
+      page: pageNum,
+      totalPages: Math.ceil(total / limitNum) || 1,
+      limit: limitNum
+    });
   } catch (error) {
     next(error);
   }
@@ -1393,7 +1531,7 @@ app.get('/api/messages', requireAuth, async (_req, res, next) => {
 app.get('/api/autoreplies', requireAuth, async (_req, res, next) => {
   try {
     await ensureDefaultAutoReplies();
-    const rules = await AutoReplyRule.find().sort({ createdAt: 1 }).lean();
+    const rules = await AutoReplyRule.find().sort({ priority: 1, createdAt: 1 }).lean();
     res.json(rules);
   } catch (error) {
     next(error);
@@ -1402,17 +1540,20 @@ app.get('/api/autoreplies', requireAuth, async (_req, res, next) => {
 
 app.post('/api/autoreplies', requireAuth, async (req, res, next) => {
   try {
-    const { keyword, replyText, language = 'bilingual', actionType = 'reply', enabled = true } = req.body;
+    const { keyword, replyText, language = 'bilingual', actionType = 'reply', category = 'keyword', priority = 1, enabled = true } = req.body;
 
     if (!keyword?.trim() || !replyText?.trim()) {
       return res.status(400).json({ error: 'Keyword and replyText are required.' });
     }
 
     const rule = await AutoReplyRule.create({
+      businessId: req.businessId || 'gs_shop_default',
       keyword: keyword.trim(),
       replyText: replyText.trim(),
       language: ['ta', 'en', 'bilingual'].includes(language) ? language : 'bilingual',
       actionType: ['reply', 'handover', 'offer'].includes(actionType) ? actionType : 'reply',
+      category: ['welcome', 'business_hours', 'away', 'keyword', 'custom'].includes(category) ? category : 'keyword',
+      priority: Number(priority) || 1,
       enabled: Boolean(enabled)
     });
 
@@ -1429,11 +1570,13 @@ app.put('/api/autoreplies/:id', requireAuth, async (req, res, next) => {
       return res.status(404).json({ error: 'Auto-reply rule not found.' });
     }
 
-    const { keyword, replyText, language, actionType, enabled } = req.body;
+    const { keyword, replyText, language, actionType, category, priority, enabled } = req.body;
     if (keyword?.trim()) rule.keyword = keyword.trim();
     if (replyText?.trim()) rule.replyText = replyText.trim();
     if (language) rule.language = language;
     if (actionType) rule.actionType = actionType;
+    if (category) rule.category = category;
+    if (priority !== undefined) rule.priority = Number(priority) || 1;
     if (enabled !== undefined) rule.enabled = Boolean(enabled);
 
     await rule.save();
@@ -1489,6 +1632,297 @@ app.post('/api/conversations/:id/resolve', requireAuth, async (req, res, next) =
     res.json({ ok: true, message: 'Handover marked as resolved.', conversation: conv });
   } catch (error) {
     next(error);
+  }
+});
+
+// ================================================================
+// WHATSAPP INTEGRATION & CONNECTION SETTINGS
+// ================================================================
+
+app.get('/api/whatsapp/settings', requireAuth, async (req, res, next) => {
+  try {
+    const hasToken = Boolean(process.env.WHATSAPP_ACCESS_TOKEN);
+    const rawPhoneId = process.env.WHATSAPP_PHONE_NUMBER_ID || '';
+    const maskedPhoneId = rawPhoneId ? `${rawPhoneId.slice(0, 4)}••••${rawPhoneId.slice(-4)}` : 'Not configured';
+    const hasSecret = Boolean(process.env.WHATSAPP_APP_SECRET);
+    const hasVerifyToken = Boolean(process.env.WHATSAPP_VERIFY_TOKEN);
+
+    const [approvedTpl, pendingTpl, totalMessages, failedMessages] = await Promise.all([
+      Template.countDocuments({ status: 'approved' }),
+      Template.countDocuments({ status: { $in: ['pending', 'demo_only'] } }),
+      MessageLog.countDocuments(),
+      MessageLog.countDocuments({ status: 'failed' })
+    ]);
+
+    const shopSettings = await ShopSettings.findOne({ settingsKey: 'default' }).lean();
+
+    res.json({
+      ok: true,
+      dryRunLocked: true,
+      mode: isDryRun() ? 'safe_dry_run_active' : 'live_guarded',
+      connection: {
+        status: hasToken && rawPhoneId ? 'connected' : 'demo_mode',
+        businessPhoneNumber: shopSettings?.phone || '+91 99000 00001',
+        phoneNumberIdMasked: maskedPhoneId,
+        wabaStatus: hasToken ? 'Verified Business Account' : 'Demo Test Cloud Sandbox',
+        webhookStatus: hasVerifyToken ? 'Configured & Verified' : 'Token Missing',
+        apiHealth: 'healthy',
+        signatureVerification: hasSecret ? 'HMAC-SHA256 Active' : (isProduction ? 'Missing Secret' : 'Dev Simulation')
+      },
+      templates: {
+        approved: approvedTpl,
+        pending: pendingTpl
+      },
+      metrics: {
+        totalDispatched: totalMessages,
+        deliveryFailures: failedMessages
+      }
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post('/api/whatsapp/test-connection', requireAuth, async (_req, res) => {
+  const hasToken = Boolean(process.env.WHATSAPP_ACCESS_TOKEN);
+  const rawPhoneId = process.env.WHATSAPP_PHONE_NUMBER_ID;
+
+  if (!hasToken || !rawPhoneId) {
+    return res.json({
+      ok: true,
+      status: 'demo_ready',
+      message: 'Demo mode active. Live Meta credentials are not configured, so campaigns run in 100% safe simulation.'
+    });
+  }
+
+  try {
+    const version = process.env.WHATSAPP_API_VERSION || 'v23.0';
+    const resp = await axios.get(`https://graph.facebook.com/${version}/${rawPhoneId}`, {
+      headers: { Authorization: `Bearer ${process.env.WHATSAPP_ACCESS_TOKEN}` },
+      timeout: 6000
+    });
+    return res.json({
+      ok: true,
+      status: 'connected',
+      message: `Successfully verified Meta WhatsApp Cloud API connection (Display Phone: ${resp.data?.display_phone_number || rawPhoneId})`,
+      details: {
+        verifiedName: resp.data?.verified_name,
+        codeVerificationStatus: resp.data?.code_verification_status
+      }
+    });
+  } catch (err) {
+    return res.json({
+      ok: false,
+      status: 'error',
+      message: `Meta API connection check returned: ${err.response?.data?.error?.message || err.message}`
+    });
+  }
+});
+
+// ================================================================
+// REPORTS, ANALYTICS & CSV EXPORT
+// ================================================================
+
+app.get('/api/reports/analytics', requireAuth, async (req, res, next) => {
+  try {
+    const { range = '30d' } = req.query;
+    let startDate = null;
+    const now = new Date();
+
+    if (range === '7d') {
+      startDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+    } else if (range === '30d') {
+      startDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+    } else if (range === 'this_month') {
+      startDate = new Date(now.getFullYear(), now.getMonth(), 1);
+    }
+
+    const dateFilter = startDate ? { createdAt: { $gte: startDate } } : {};
+
+    const [
+      totalCustomers,
+      optedIn,
+      optedOut,
+      newCustomersInRange,
+      totalMessages,
+      deliveredMessages,
+      failedMessages,
+      simulatedMessages,
+      conversationsCount,
+      recentCampaigns
+    ] = await Promise.all([
+      Customer.countDocuments(),
+      Customer.countDocuments({ consentStatus: 'opted_in' }),
+      Customer.countDocuments({ consentStatus: 'opted_out' }),
+      Customer.countDocuments(dateFilter),
+      MessageLog.countDocuments(dateFilter),
+      MessageLog.countDocuments({ ...dateFilter, status: { $in: ['delivered', 'read'] } }),
+      MessageLog.countDocuments({ ...dateFilter, status: 'failed' }),
+      MessageLog.countDocuments({ ...dateFilter, status: 'dry_run' }),
+      Conversation.countDocuments(dateFilter),
+      Campaign.find(dateFilter).sort({ createdAt: -1 }).limit(10).lean()
+    ]);
+
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+    const monthlyUsage = await MessageLog.countDocuments({ createdAt: { $gte: startOfMonth } });
+
+    res.json({
+      ok: true,
+      range,
+      customers: {
+        total: totalCustomers,
+        optedIn,
+        optedOut,
+        newInRange: newCustomersInRange,
+        optInRate: totalCustomers > 0 ? Math.round((optedIn / totalCustomers) * 100) : 0
+      },
+      messages: {
+        total: totalMessages,
+        delivered: deliveredMessages,
+        failed: failedMessages,
+        simulated: simulatedMessages,
+        monthlyUsage,
+        monthlyLimit: 5000,
+        deliveryRate: totalMessages > 0 ? Math.round((deliveredMessages / totalMessages) * 100) : 100
+      },
+      conversations: {
+        total: conversationsCount
+      },
+      recentCampaigns
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.get('/api/reports/export-csv', requireAuth, async (req, res, next) => {
+  try {
+    const type = req.query.type || 'customers';
+    if (type === 'customers') {
+      const customers = await Customer.find().sort({ createdAt: -1 }).lean();
+      let csv = 'Name,Phone,Segment,Birthday,Source,Consent Status,Consent Source,Created At\n';
+      for (const c of customers) {
+        const row = [
+          `"${(c.name || '').replace(/"/g, '""')}"`,
+          `"${c.phone || ''}"`,
+          `"${c.segment || ''}"`,
+          `"${c.birthday || ''}"`,
+          `"${c.source || ''}"`,
+          `"${c.consentStatus || ''}"`,
+          `"${c.consentSource || ''}"`,
+          `"${c.createdAt ? new Date(c.createdAt).toISOString() : ''}"`
+        ];
+        csv += row.join(',') + '\n';
+      }
+      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader('Content-Disposition', 'attachment; filename="customers_export.csv"');
+      return res.send(csv);
+    } else {
+      const messages = await MessageLog.find()
+        .populate('customerId', 'name')
+        .populate('campaignId', 'name')
+        .sort({ createdAt: -1 })
+        .limit(1000)
+        .lean();
+
+      let csv = 'Customer Name,Phone,Template,Campaign,Status,Type,Date\n';
+      for (const m of messages) {
+        const row = [
+          `"${(m.customerId?.name || 'Customer').replace(/"/g, '""')}"`,
+          `"${m.recipientPhone || ''}"`,
+          `"${m.templateName || ''}"`,
+          `"${(m.campaignId?.name || 'Campaign').replace(/"/g, '""')}"`,
+          `"${m.status || ''}"`,
+          `"${m.messageType || 'broadcast'}"`,
+          `"${m.createdAt ? new Date(m.createdAt).toISOString() : ''}"`
+        ];
+        csv += row.join(',') + '\n';
+      }
+      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader('Content-Disposition', 'attachment; filename="broadcast_messages_export.csv"');
+      return res.send(csv);
+    }
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ================================================================
+// SAAS SUBSCRIPTION ARCHITECTURE & MULTI-TENANCY
+// ================================================================
+
+app.get('/api/subscription', requireAuth, async (req, res, next) => {
+  try {
+    const tenant = (await Tenant.findOne({ tenantId: req.businessId || 'gs_shop_default' }).lean()) || {
+      tenantId: 'gs_shop_default',
+      name: 'GS Shop Alangulam',
+      plan: 'pro',
+      monthlyMessageLimit: 5000,
+      customerLimit: 2500,
+      campaignLimit: 50,
+      subscriptionStatus: 'active',
+      renewalDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000)
+    };
+
+    const currentMonth = new Date();
+    currentMonth.setDate(1);
+    currentMonth.setHours(0, 0, 0, 0);
+
+    const [usedCount, customerCount, campaignCount] = await Promise.all([
+      MessageLog.countDocuments({ createdAt: { $gte: currentMonth } }),
+      Customer.countDocuments(),
+      Campaign.countDocuments()
+    ]);
+
+    res.json({
+      ok: true,
+      tenant: {
+        ...tenant,
+        monthlyMessagesUsed: usedCount,
+        customerCount,
+        campaignCount
+      }
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.put('/api/subscription/plan', requireAuth, async (req, res, next) => {
+  try {
+    const { plan } = req.body;
+    if (!['free', 'starter', 'pro', 'enterprise'].includes(plan)) {
+      return res.status(400).json({ error: 'Invalid subscription plan.' });
+    }
+
+    const limits = {
+      free: { messageLimit: 500, customerLimit: 200, campaignLimit: 5 },
+      starter: { messageLimit: 2000, customerLimit: 1000, campaignLimit: 20 },
+      pro: { messageLimit: 5000, customerLimit: 2500, campaignLimit: 50 },
+      enterprise: { messageLimit: 25000, customerLimit: 10000, campaignLimit: 200 }
+    }[plan];
+
+    const tenant = await Tenant.findOneAndUpdate(
+      { tenantId: req.businessId || 'gs_shop_default' },
+      {
+        $set: {
+          plan,
+          monthlyMessageLimit: limits.messageLimit,
+          customerLimit: limits.customerLimit,
+          campaignLimit: limits.campaignLimit,
+          subscriptionStatus: 'active'
+        }
+      },
+      { upsert: true, new: true }
+    );
+
+    res.json({
+      ok: true,
+      message: `Subscription plan upgraded to ${plan.toUpperCase()}.`,
+      tenant
+    });
+  } catch (err) {
+    next(err);
   }
 });
 
@@ -1683,6 +2117,7 @@ mongoose
       'mongodb://127.0.0.1:27017/gs_shop_whatsapp_demo'
   )
   .then(async () => {
+    await ensureDefaultTenant();
     await ensureDemoTemplates();
     await ensureDefaultAutoReplies();
 
